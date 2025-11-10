@@ -1,6 +1,11 @@
 # Environment variables
 .env
-/venv
+
+# Virtual environment
+venv/
+env/
+ENV/
+.venv
 
 # Telegram session files
 *.session
@@ -12,3 +17,5 @@
 # Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
