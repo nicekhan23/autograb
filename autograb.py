@@ -26,6 +26,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME")
 # 🔹 Условия фильтра
 MIN_TONS = int(os.getenv("MIN_TONS", 0))
 MIN_PRICE = int(os.getenv("MIN_PRICE", 0))
+MIN_ACCEPTABLE_PRICE = 4500  # Минимальная приемлемая цена для перебивания
 
 # --- Настраиваем логирование ---
 logging.basicConfig(
@@ -155,6 +156,39 @@ async def handler(event):
                 log("⚠️ В сообщении нет кнопок.", 'error')
         else:
             log("⏩ Заказ не подходит по условиям.")
+        
+    # 3️⃣ Конкуренция за заказ (кто-то уже откликнулся)
+    elif 'по данному заказу уже есть предложение' in text and 'вы можете взять этот заказ по цене' in text:
+        # Ищем цену, по которой можем взять заказ
+        price_match = re.search(r'вы можете взять этот заказ по цене\s*([\d.,]+)', text, re.IGNORECASE)
+        
+        if price_match:
+            compete_price = float(price_match.group(1).replace(',', '.').replace(' ', ''))
+            log(f"⚔️ Конкуренция! Могу взять заказ по цене {compete_price} тг/т")
+            
+            if compete_price >= MIN_ACCEPTABLE_PRICE:
+                log(f"✅ Цена {compete_price} >= {MIN_ACCEPTABLE_PRICE}, перебиваю!")
+                await asyncio.sleep(0.8)
+                
+                if event.buttons:
+                    for row in event.buttons:
+                        for button in row:
+                            if 'возьму' in button.text.lower():
+                                await button.click()
+                                log(f"🚚 Перебил конкурента! Взял по цене {compete_price}")
+                                
+                                # Запоминаем данные для ответа боту
+                                waiting_for_tons_input = True
+                                # Пытаемся найти тоннаж в этом же сообщении или используем минимальный
+                                tons_match = re.search(r'всего тонн:\s*([\d.,]+)', event.raw_text, re.IGNORECASE)
+                                current_order_tons = float(tons_match.group(1).replace(',', '.')) if tons_match else MIN_TONS
+                                current_order_price = compete_price
+                                return
+                    log("⚠️ Кнопка 'Возьму' не найдена в конкурентном заказе.", 'error')
+            else:
+                log(f"⏩ Цена {compete_price} < {MIN_ACCEPTABLE_PRICE}, пропускаю конкурентный заказ.")
+        else:
+            log("⚠️ Не удалось извлечь цену из конкурентного предложения.", 'error')
 
 async def periodic_check():
     """Проверяет заказы каждый час"""
