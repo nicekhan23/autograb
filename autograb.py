@@ -146,30 +146,9 @@ async def handler(event):
         else:
             log("⏩ Заказ не подходит по условиям.")
 
-async def periodic_check():
-    """Проверяет заказы каждый час"""
-    while True:
-        await asyncio.sleep(3600)  # 1 час
-        log("⏰ Автопроверка заказов...")
-        await client.send_message(BOT_USERNAME, '/start')
-        await asyncio.sleep(2)
-        
-        # Ищем кнопку "Список текущих заказов"
-        async for msg in client.iter_messages(BOT_USERNAME, limit=5):
-            if msg.buttons:
-                for row in msg.buttons:
-                    for button in row:
-                        if 'список текущих заказов' in button.text.lower():
-                            await button.click()
-                            log("📋 Открыл список заказов (авточек)")
-                            break
-
 async def main():
     await client.start()
     log("🤖 Авто-принятие заказов запущено. Ожидаем новые заказы...")
-    
-    # Запускаем периодическую проверку
-    asyncio.create_task(periodic_check())
     
     await client.run_until_disconnected()
 
