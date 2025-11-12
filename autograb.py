@@ -74,22 +74,21 @@ async def handler(event):
     text = event.raw_text.lower()
 
     # 🔹 Если ждём ответа на вопрос о тоннах
-    if waiting_for_tons_input and current_order_tons:
+    if waiting_for_tons_input and current_order_tons and ('сколько тонн' in text or 'укажите количество' in text):
         log(f"✍️ Отвечаю: {current_order_tons} тонн")
         await event.respond(str(current_order_tons))
         waiting_for_tons_input = False
-        # Now wait for price question
-        waiting_for_price_input = True 
-        current_order_tons = None
+        waiting_for_price_input = True
         return 
     
     # 🔹 Если ждём ответа на вопрос о цене
-    if waiting_for_price_input and current_order_price:
+    if waiting_for_price_input and current_order_price and ('цену' in text or 'стоимость' in text):
         log(f"✍️ Отвечаю: {current_order_price} тенге")
         await event.respond(str(current_order_price))
         waiting_for_price_input = False
         current_order_price = None
-        await asyncio.sleep(2)
+        current_order_tons = None
+        return
 
     # 1️⃣ Уведомление о новом заказе
     if 'размещен новый заказ' in text or 'новый заказ' in text:
@@ -105,7 +104,7 @@ async def handler(event):
         return
 
     # 2️⃣ Пришёл заказ
-    elif 'номер заказа' in text and 'всего тонн' in text:
+    if 'номер заказа' in text and 'всего тонн' in text:
         order_id, tons, price = parse_order(event.raw_text)
         if tons is None or price is None:
             log("⚠️ Не удалось распарсить заказ.", 'error')
@@ -129,12 +128,12 @@ async def handler(event):
                             await button.click()
                             log(f"🚚 Нажал 'Возьму' на заказ #{order_id}")
                             
-                            # Запоминаем заказ и тоннаж
+                            # Запоминаем заказ и параметры
                             if order_id:
                                 processed_orders.add(order_id)
-                            waiting_for_tons_input = True
                             current_order_tons = tons
                             current_order_price = price
+                            waiting_for_tons_input = True
                             return
                 log("⚠️ Кнопка 'Возьму' не найдена.", 'error')
             else:
