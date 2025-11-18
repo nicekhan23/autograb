@@ -92,9 +92,14 @@ async def handler(event):
 
     # 1️⃣ Уведомление о новом заказе
     if 'размещен новый заказ' in text or 'новый заказ' in text:
+        # Пропускаем, если уже ждём ввода данных
+        if waiting_for_tons_input or waiting_for_price_input:
+            log("⏸️ Уже обрабатываю заказ, пропускаю уведомление о новом")
+            return
+        
         log("🆕 Новый заказ обнаружен!")
         await asyncio.sleep(1.5)
-        
+    
         # Отправляем текст кнопки напрямую (reply keyboard button)
         try:
             await client.send_message(BOT_USERNAME, "👷‍♂️ Список текущих заказов")
@@ -105,10 +110,12 @@ async def handler(event):
 
     # 2️⃣ Пришёл заказ
     if 'номер заказа' in text and 'всего тонн' in text:
-        order_id, tons, price = parse_order(event.raw_text)
-        if tons is None or price is None:
-            log("⚠️ Не удалось распарсить заказ.", 'error')
+        # Пропускаем новые заказы, если уже ждём ввода
+        if waiting_for_tons_input or waiting_for_price_input:
+            log("⏸️ Уже обрабатываю заказ, пропускаю новый")
             return
+        
+        order_id, tons, price = parse_order(event.raw_text)
 
         # Проверяем, не обрабатывали ли уже
         if order_id and order_id in processed_orders:
