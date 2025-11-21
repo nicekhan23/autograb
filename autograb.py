@@ -73,22 +73,32 @@ async def handler(event):
     
     text = event.raw_text.lower()
 
+    @client.on(events.NewMessage(chats=BOT_USERNAME))
+async def handler(event):
+    global waiting_for_tons_input, waiting_for_price_input, current_order_tons, current_order_price
+    
+    text = event.raw_text.lower()
+
     # 🔹 Если ждём ответа на вопрос о тоннах
-    if waiting_for_tons_input and current_order_tons and ('сколько тонн' in text or 'укажите количество' in text):
-        log(f"✍️ Отвечаю: {current_order_tons} тонн")
-        await event.respond(str(current_order_tons))
-        waiting_for_tons_input = False
-        waiting_for_price_input = True
-        return 
+    if waiting_for_tons_input and current_order_tons:
+        if 'сколько тонн' in text or 'можете взять' in text:
+            log(f"✍️ Отвечаю: {current_order_tons} тонн")
+            await asyncio.sleep(0.5)
+            await event.respond(str(int(current_order_tons)))
+            waiting_for_tons_input = False
+            waiting_for_price_input = True
+            return 
     
     # 🔹 Если ждём ответа на вопрос о цене
-    if waiting_for_price_input and current_order_price and ('цену' in text or 'стоимость' in text):
-        log(f"✍️ Отвечаю: {current_order_price} тенге")
-        await event.respond(str(current_order_price))
-        waiting_for_price_input = False
-        current_order_price = None
-        current_order_tons = None
-        return
+    if waiting_for_price_input and current_order_price:
+        if 'цену' in text or 'вашу цену' in text or 'напишите' in text:
+            log(f"✍️ Отвечаю: {current_order_price} тенге")
+            await asyncio.sleep(0.5)
+            await event.respond(str(int(current_order_price)))
+            waiting_for_price_input = False
+            current_order_price = None
+            current_order_tons = None
+            return
 
     # 1️⃣ Уведомление о новом заказе или отмене
     if ('размещен новый заказ' in text and 'смотрите список заказов' in text) or ('отменено' in text and 'заказ в статусе выбор' in text):
