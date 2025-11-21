@@ -73,12 +73,6 @@ async def handler(event):
     
     text = event.raw_text.lower()
 
-    @client.on(events.NewMessage(chats=BOT_USERNAME))
-async def handler(event):
-    global waiting_for_tons_input, waiting_for_price_input, current_order_tons, current_order_price
-    
-    text = event.raw_text.lower()
-
     # 🔹 Если ждём ответа на вопрос о тоннах
     if waiting_for_tons_input and current_order_tons:
         if 'сколько тонн' in text or 'можете взять' in text:
@@ -108,7 +102,7 @@ async def handler(event):
             return
         
         log("🆕 Новый заказ обнаружен!")
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(0.5)
     
         # Отправляем текст кнопки напрямую (reply keyboard button)
         try:
@@ -142,7 +136,7 @@ async def handler(event):
         # Проверяем условия
         if tons >= MIN_TONS and price >= MIN_PRICE:
             log("✅ Подходит! Нажимаю 'Возьму'...")
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.5)
 
             if event.buttons:
                 for row in event.buttons:
