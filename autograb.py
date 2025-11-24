@@ -118,45 +118,61 @@ async def handler(event):
         if waiting_for_tons_input or waiting_for_price_input:
             log("⏸️ Уже обрабатываю заказ, пропускаю новый")
             return
+
+        # Разделяем на отдельные заказы (если их несколько в одном сообщении)
+        original_text = event.raw_text
+        order_blocks = re.split(r'\n\s*Номер заказа:', original_text)
     
-        # Берём только заказы со статусом "Нет предложений"
-        if 'есть предлолжение' in text or 'есть предложение' in text:
-            log("⏭️ Пропускаю заказ - уже есть предложения")
-            return
-    
-        order_id, tons, price = parse_order(event.raw_text)
+        for block in order_blocks:
+            if not block.strip():
+                continue
+            
+            # Восстанавливаем "Номер заказа:" если он был убран split'ом
+            if 'Номер заказа:' not in block:
+                block = 'Номер заказа:' + block
+        
+            # Проверяем статус в этом конкретном блоке
+            if 'Есть предлолжение' in block or 'Есть предложение' in block:
+                log("⏭️ Пропускаю заказ - уже есть предложения")
+                continue
+        
+            if 'Нет предложений' not in block:
+                continue
+        
+            order_id, tons, price = parse_order(block)
 
-        # Проверяем, не обрабатывали ли уже этот заказ
-        if order_id and order_id in processed_orders:
-            log(f"⏭️ Заказ #{order_id} уже обработан, пропускаю.")
-            return
+            # Проверяем, не обрабатывали ли уже этот заказ
+            if order_id and order_id in processed_orders:
+                log(f"⏭️ Заказ #{order_id} уже обработан, пропускаю.")
+                continue
 
-        log(f"📦 Заказ #{order_id}: {tons} т, {price} тг/т")
+            log(f"📦 Заказ #{order_id}: {tons} т, {price} тг/т")
 
-        # Проверяем условия
-        if tons >= MIN_TONS and price >= MIN_PRICE:
-            log("✅ Подходит! Нажимаю 'Возьму'...")
-            await asyncio.sleep(0.5)
+            # Проверяем условия
+            if tons >= MIN_TONS and price >= MIN_PRICE:
+                log("✅ Подходит! Нажимаю 'Возьму'...")
+                await asyncio.sleep(0.5)
 
-            if event.buttons:
-                for row in event.buttons:
-                    for button in row:
-                        if 'возьму' in button.text.lower():
-                            await button.click()
-                            log(f"🚚 Нажал 'Возьму' на заказ #{order_id}")
+                if event.buttons:
+                    for row in event.buttons:
+                        for button in row:
+                            if 'возьму' in button.text.lower():
+                                await button.click()
+                                log(f"🚚 Нажал 'Возьму' на заказ #{order_id}")
                         
-                            # Запоминаем заказ и параметры
-                            if order_id:
-                                processed_orders.add(order_id)
-                            current_order_tons = tons
-                            current_order_price = price
-                            waiting_for_tons_input = True
-                            return
-                log("⚠️ Кнопка 'Возьму' не найдена.", 'error')
+                                # Запоминаем заказ и параметры
+                                if order_id:
+                                    processed_orders.add(order_id)
+                                current_order_tons = tons
+                                current_order_price = price
+                                waiting_for_tons_input = True
+                                return  # Обрабатываем только один заказ за раз
+                    log("⚠️ Кнопка 'Возьму' не найдена.", 'error')
+                else:
+                    log("⚠️ В сообщении нет кнопок.", 'error')
+                return  # Выходим после первого подходящего заказа
             else:
-                log("⚠️ В сообщении нет кнопок.", 'error')
-        else:
-            log("⏩ Заказ не подходит по условиям.")
+                log("⏩ Заказ не подходит по условиям.")
 
 async def main():
     await client.start()
