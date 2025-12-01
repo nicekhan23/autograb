@@ -134,7 +134,11 @@ def is_tons_question(text_lower: str) -> bool:
 
 
 def is_price_question(text_lower: str) -> bool:
-    return bool(re.search(r'цен[ыу]|вашу\s+цену|напишите\s+цену|какая\s+цена', text_lower))
+    return bool(re.search(
+        r'(цен[ау]|назовите\s+.*цен|напишите\s+свою\s+цен|укажите\s+.*цен|ваш[ау]\s+цен|какая\s+цен|сколько\s+хотите|сколько\s+возьмёте)',
+        text_lower
+    ))
+
 
 
 async def respond_tons(event, order):
