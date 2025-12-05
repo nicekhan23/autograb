@@ -1,3 +1,4 @@
+# autograb.py
 import os
 import asyncio
 import logging
@@ -5,7 +6,10 @@ import re
 import datetime
 import traceback
 from collections import deque
-from logging.handlers import RotatingFileHandler
+from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener
+from queue import Queue
+from concurrent.futures import ThreadPoolExecutor
+
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
 
@@ -18,39 +22,51 @@ BOT = os.getenv("BOT_USERNAME")
 MIN_TONS = int(os.getenv("MIN_TONS", 0))
 MIN_PRICE = int(os.getenv("MIN_PRICE", 0))
 
-# ---- Режим логирования (для быстрого переключения) ----
-logging_level = logging.DEBUG  # поставь INFO/WARNING в проде
+# ---- Runtime / параметры ----
+logging_level = logging.DEBUG  # в проде ставь INFO/WARNING
+BUFFER_EXPIRY_SECONDS = 30  # время жизни "последнего вопроса" в сек
+PARSE_WORKERS = 2  # пул для парсинга (не блокируем event loop)
 
-# ---- Настройка логирования: файл + ротация + консоль ----
+# ---- Логирование (неблокирующее) ----
+log_queue = Queue(-1)
+queue_handler = QueueHandler(log_queue)
+
+# файловый логер в отдельном потоке (QueueListener)
+file_handler = RotatingFileHandler('auto_orders_debug.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(file_formatter)
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(file_formatter)
+
 logger = logging.getLogger()
 logger.setLevel(logging_level)
 
-log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+# добавляем только очередь (основной поток быстро ставит записи в очередь)
+logger.addHandler(queue_handler)
 
-# rotating file handler (max 10MB per file, keep 5)
-file_handler = RotatingFileHandler('auto_orders_debug.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
-file_handler.setFormatter(log_formatter)
-logger.addHandler(file_handler)
+# listener будет писать в файл и консоль в отдельном потоке
+listener = QueueListener(log_queue, file_handler, console_handler)
+listener.start()
 
-# console
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(log_formatter)
-logger.addHandler(console_handler)
+# снизим Telethon-логгинг в проде (очень много вывода влияет на производительность)
+logging.getLogger('telethon').setLevel(logging.WARNING if logging_level != logging.DEBUG else logging.DEBUG)
 
-# Telethon internal logger (очень подробный) — можно оставить или снизить
-logging.getLogger('telethon').setLevel(logging_level)
+# ---- Globals / state ----
+processed_orders = set()        # oid, которые уже обработали
+processed_msg_ids = set()       # message.id, которые уже обработаны (предотвращение дублей)
+current_state = None            # None / "waiting_tons" / "waiting_price"
+current_order = {}              # {"id":..., "tons":..., "price":...}
+last_clicked_order_id = None
 
-# ---- Runtime state ----
-processed_orders = set()           # заказы, по которым уже кликали
-current_state = None               # None / "waiting_tons" / "waiting_price"
-current_order = {}                 # {"id":..., "tons":..., "price":...}
-last_clicked_order_id = None       # id последнего кликнутого заказа
+# вместо большого буфера — храним только последние подходящие вопросы (и их timestamp)
+last_tons_event = None   # (event, datetime)
+last_price_event = None  # (event, datetime)
 
-# буфер входящих сообщений для обработки гонок (сообщение, текст_lower, date)
-# держим последние N сообщений; при клике ищем уже пришедшие вопросы
-message_buffer = deque(maxlen=200)
-BUFFER_EXPIRY_SECONDS = 30  # сколько секунд назад ещё считаем сообщение "свежим"
+# ThreadPool для CPU-bound parse
+parse_executor = ThreadPoolExecutor(max_workers=PARSE_WORKERS)
 
+# Telethon client
 client = TelegramClient("auto_truck_orders", API_ID, API_HASH)
 
 
@@ -66,17 +82,15 @@ def safe_repr(x):
 
 
 def log_debug_event(event, note=""):
-    """Записываем подробную информацию о событии в debug"""
+    """Пишем развёрнутую отладочную информацию."""
     try:
         logging.debug("---- EVENT START %s ----", note)
-        # stringify даёт развёрнутую инфу Telethon (полезно)
         try:
             s = event.stringify()
             logging.debug("event.stringify():\n%s", s)
         except Exception as e:
             logging.debug("event.stringify() failed: %s", e)
 
-        # message id / sender / peer / raw_text
         try:
             msg = event.message
             logging.debug("message id: %s", getattr(msg, 'id', None))
@@ -85,15 +99,12 @@ def log_debug_event(event, note=""):
             logging.debug("message raw_text repr: %s", safe_repr(getattr(event, 'raw_text', None)))
         except Exception:
             logging.debug("cannot access message fields:\n%s", traceback.format_exc())
-
-        # кнопки (если есть) — распечатаем структуру
         try:
             if getattr(event, 'buttons', None):
                 logging.debug("Buttons present: True")
                 for r_i, row in enumerate(event.buttons):
                     for b_i, btn in enumerate(row):
                         try:
-                            # .text может быть None, кнопки могут быть callback/data
                             logging.debug(
                                 "Button row %d col %d: text=%s, __repr__=%s",
                                 r_i, b_i, safe_repr(getattr(btn, 'text', None)), safe_repr(btn)
@@ -110,35 +121,43 @@ def log_debug_event(event, note=""):
         logging.debug("log_debug_event failed:\n%s", traceback.format_exc())
 
 
-def parse_order(text):
-    oid_m = re.search(r'Номер заказа:\s*(\d+)', text, re.IGNORECASE)
-    tons_m = re.search(r'Всего тонн:\s*([\d.,]+)', text, re.IGNORECASE)
-    price_m = re.search(r'Максимальная цена за тонну:\s*([\d.,]+)', text, re.IGNORECASE)
+# ---- предкомпилированные regex'ы ----
+RE_ORDER_SPLIT = re.compile(r'\n\s*Номер заказа:', flags=re.IGNORECASE)
+RE_HAS_NO_OFFERS = re.compile(r'нет\s+предложен', flags=re.IGNORECASE)
+RE_HAS_OFFERS = re.compile(r'есть\s+предл', flags=re.IGNORECASE)
+RE_OID = re.compile(r'Номер заказа:\s*(\d+)', flags=re.IGNORECASE)
+RE_TONS = re.compile(r'Всего тонн:\s*([\d.,]+)', flags=re.IGNORECASE)
+RE_PRICE = re.compile(r'Максимальная цена за тонну:\s*([\d.,]+)', flags=re.IGNORECASE)
 
-    if not tons_m or not price_m:
-        return None
+RE_IS_TONS_QUESTION = re.compile(r'сколько\s+тонн|сколько\s+т\.|можете\s+взять', flags=re.IGNORECASE)
+RE_IS_PRICE_QUESTION = re.compile(
+    r'(цен[ау]|назовите\s+.*цен|напишите\s+свою\s+цен|укажите\s+.*цен|ваш[ау]\s+цен|какая\s+цен|сколько\s+хотите|сколько\s+возьм[её]те)',
+    flags=re.IGNORECASE
+)
 
+
+def parse_order_block_sync(block_text: str):
+    """Синхронный парсер одного блока. Вызывается в executor."""
     try:
+        oid_m = RE_OID.search(block_text)
+        tons_m = RE_TONS.search(block_text)
+        price_m = RE_PRICE.search(block_text)
+
+        if not tons_m or not price_m:
+            return None
+
         oid = oid_m.group(1) if oid_m else None
         tons = float(tons_m.group(1).replace(',', '.'))
         price = float(price_m.group(1).replace(',', '.'))
+        return {"id": oid, "tons": tons, "price": price}
     except Exception:
-        logging.exception("Ошибка парсинга чисел в parse_order")
+        logging.exception("Ошибка парсинга в parse_order_block_sync")
         return None
 
-    return {"id": oid, "tons": tons, "price": price}
 
-
-def is_tons_question(text_lower: str) -> bool:
-    return bool(re.search(r'сколько\s+тонн|сколько\s+т\.|можете\s+взять', text_lower))
-
-
-def is_price_question(text_lower: str) -> bool:
-    return bool(re.search(
-        r'(цен[ау]|назовите\s+.*цен|напишите\s+свою\s+цен|укажите\s+.*цен|ваш[ау]\s+цен|какая\s+цен|сколько\s+хотите|сколько\s+возьмёте)',
-        text_lower
-    ))
-
+async def parse_order_block(block_text: str):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(parse_executor, parse_order_block_sync, block_text)
 
 
 async def respond_tons(event, order):
@@ -163,85 +182,52 @@ async def respond_price(event, order):
         logging.exception("Ошибка при отправке ответа цены")
 
 
-def buffer_prune():
-    """Удаляем старые сообщения из буфера (необязательно — deque maxlen держит размер)."""
+def prune_last_questions():
+    """Удаляем устаревшие записи last_tons_event / last_price_event."""
+    global last_tons_event, last_price_event
     cutoff = now_utc() - datetime.timedelta(seconds=BUFFER_EXPIRY_SECONDS)
-    # inplace prune (deque имеет нетривиальную filter, делаем rebuild)
-    newbuf = deque((m for m in message_buffer if m[2] >= cutoff), maxlen=message_buffer.maxlen)
-    message_buffer.clear()
-    message_buffer.extend(newbuf)
-
-
-async def scan_buffer_and_handle_questions():
-    """
-    После клика или установки состояния — просканируем буфер на предмет уже пришедших вопросов,
-    и если найдём — ответим.
-    """
-    global current_state, current_order
-
-    buffer_prune()
-    if not current_order:
-        return
-
-    cutoff = now_utc() - datetime.timedelta(seconds=BUFFER_EXPIRY_SECONDS)
-    # проходим по буферу в порядке от старых к новым
-    for event, text_lower, date in list(message_buffer):
-        if date < cutoff:
-            continue
-        try:
-            if current_state == "waiting_tons" and is_tons_question(text_lower):
-                logging.debug("Найден в буфере вопрос про тонны (от %s). Отвечаем.", date)
-                await respond_tons(event, current_order)
-                current_state = "waiting_price"
-                return
-            if current_state == "waiting_price" and is_price_question(text_lower):
-                logging.debug("Найден в буфере вопрос про цену (от %s). Отвечаем.", date)
-                await respond_price(event, current_order)
-                current_state = None
-                current_order = {}
-                return
-        except Exception:
-            logging.exception("Ошибка при обработке буфера")
+    if last_tons_event and last_tons_event[1] < cutoff:
+        last_tons_event = None
+    if last_price_event and last_price_event[1] < cutoff:
+        last_price_event = None
 
 
 @client.on(events.NewMessage(from_users=BOT))
-async def handler(event):
-    global current_state, current_order, last_clicked_order_id
+async def generic_handler(event):
+    """
+    Универсальный handler: логируем, сохраняем последние вопросы в quick slots,
+    и реагируем на уведомления о новом списке заказов.
+    """
+    global last_tons_event, last_price_event
 
-    # немедленно логируем подробности входящего события
-    log_debug_event(event, note="incoming from BOT")
+    log_debug_event(event, note="incoming from BOT (generic)")
 
     raw = event.raw_text or ""
     text_lower = raw.lower()
 
-    # добавляем в буфер свежую копию (на случай гонок)
+    # защита от повторной обработки одного сообщения
+    msg_id = getattr(event.message, "id", None)
+    if msg_id and msg_id in processed_msg_ids:
+        logging.debug("Message id %s уже обработан, пропускаю.", msg_id)
+        return
+    if msg_id:
+        processed_msg_ids.add(msg_id)
+
+    # обновление последних вопросов
     try:
-        msg_date = getattr(event.message, 'date', None) or now_utc()
-        # ensure timezone-aware
-        if msg_date.tzinfo is None:
-            msg_date = msg_date.replace(tzinfo=datetime.timezone.utc)
-        message_buffer.append((event, text_lower, msg_date))
+        if RE_IS_TONS_QUESTION.search(text_lower):
+            last_tons_event = (event, now_utc())
+            logging.debug("Сохранил last_tons_event (msg_id=%s)", msg_id)
+        if RE_IS_PRICE_QUESTION.search(text_lower):
+            last_price_event = (event, now_utc())
+            logging.debug("Сохранил last_price_event (msg_id=%s)", msg_id)
     except Exception:
-        logging.exception("Не удалось добавить событие в message_buffer")
+        logging.exception("Ошибка при определении вопроса")
 
-    # пытаемся ловить вопросы (состояния)
+    # --- Если уведомление о новом заказе / отмене ---
     try:
-        # --- Если уже в ожидании тонн — при наступлении вопроса ответим ---
-        if current_state == "waiting_tons" and is_tons_question(text_lower):
-            await respond_tons(event, current_order)
-            current_state = "waiting_price"
-            return
-
-        # --- Если уже в ожидании цены ---
-        if current_state == "waiting_price" and is_price_question(text_lower):
-            await respond_price(event, current_order)
-            current_state = None
-            current_order = {}
-            return
-
-        # --- уведомление о новом заказе / запрос списка ---
-        if (('размещен новый заказ' in text_lower and 'смотрите список заказов' in text_lower) or
-                ('отменено' in text_lower and 'заказ в статусе' in text_lower)):
+        if (('размещен новый заказ' in text_lower and 'смотрите список заказов' in text_lower)
+                or ('отменено' in text_lower and 'заказ в статусе' in text_lower)):
             if current_state is not None:
                 logging.info("⏸️ Уже обрабатываю заказ — пропускаю уведомление")
                 return
@@ -253,32 +239,38 @@ async def handler(event):
                 logging.exception("Ошибка при отправке команды 'Список текущих заказов'")
             return
 
-        # --- получили сообщение со списком заказов ---
+        # --- получили сообщение со списком заказов (один или несколько блоков) ---
         if 'номер заказа' in text_lower and 'всего тонн' in text_lower:
             if current_state is not None:
                 logging.info("⏸️ Уже обрабатываю заказ — игнорирую список")
                 return
 
-            # разбиваем на блоки (учтём регистры) — сохраняем оригинальный raw для парсинга
-            blocks = re.split(r'\n\s*Номер заказа:', raw, flags=re.IGNORECASE)
+            # разбиваем на блоки
+            blocks = RE_ORDER_SPLIT.split(raw)
             for block in blocks:
                 if not block.strip():
                     continue
                 if 'Номер заказа:' not in block:
                     block = 'Номер заказа:' + block
 
-                # если в блоке есть предложения — пропускаем
-                if re.search(r'есть\s+предл', block, flags=re.IGNORECASE):
+                # быстрые проверки текста (чтобы избежать парсинга)
+                if RE_HAS_OFFERS.search(block):
                     logging.info("⏭️ Пропускаю — уже есть предложения в блоке")
                     continue
 
-                if re.search(r'нет\s+предложен', block, flags=re.IGNORECASE) is None:
+                if RE_HAS_NO_OFFERS.search(block) is None:
                     logging.info("⏭️ Пропускаю — в блоке нет 'Нет предложений'")
                     continue
 
-                data = parse_order(block)
+                # парсим блок в пуле исполнителей (не блокируем event loop)
+                try:
+                    data = await parse_order_block(block)
+                except Exception:
+                    logging.exception("parse_order_block failed")
+                    data = None
+
                 if not data:
-                    logging.debug("Не удалось распарсить заказ в блоке: %s", safe_repr(block))
+                    logging.debug("Не удалось распарсить заказ в блоке: %s", safe_repr(block[:200]))
                     continue
 
                 oid = data.get('id')
@@ -292,7 +284,7 @@ async def handler(event):
                     logging.info("⏩ Заказ #%s не проходит фильтр (tons/price)", oid)
                     continue
 
-                # нажимаем кнопку "Возьму"
+                # нажимаем кнопку "Возьму" — асинхронно, не дожидаясь RPC
                 if getattr(event, 'buttons', None):
                     clicked = False
                     for r_i, row in enumerate(event.buttons):
@@ -300,40 +292,96 @@ async def handler(event):
                             btn_text = getattr(btn, 'text', '') or ''
                             logging.debug("Пробую кнопку row=%d col=%d text=%s", r_i, c_i, safe_repr(btn_text))
                             if 'возьму' in btn_text.lower():
-                                # защита от двойного клика: повторно не кликаем, если уже обработали этот oid
                                 try:
+                                    # асинхронный клик: не блокирует loop, Telethon выполнит RPC независимо
                                     asyncio.create_task(btn.click())
                                     logging.info("🚚 (async) Нажал 'Возьму' на заказ #%s (row=%d col=%d)", oid, r_i, c_i)
                                 except Exception:
                                     logging.exception("Ошибка при асинхронном клике по кнопке 'Возьму'")
                                     continue
 
-
-                                # успешно кликнули — отмечаем заказ и выставляем состояние
+                                # пометить заказ как обработанный и установить state
                                 processed_orders.add(oid)
-                                current_order = data
+                                current_order.clear()
+                                current_order.update(data)
                                 current_state = "waiting_tons"
                                 last_clicked_order_id = oid
                                 clicked = True
 
-                                # сразу после клика — сканируем буфер: возможно вопрос уже был пришёл ранее
-                                await scan_buffer_and_handle_questions()
+                                # сразу после клика — попробуем ответить на последний вопрос, если он уже есть
+                                prune_last_questions()
+                                if current_state == "waiting_tons" and last_tons_event:
+                                    # ответим (не дожидаясь)
+                                    try:
+                                        asyncio.create_task(respond_tons(last_tons_event[0], current_order))
+                                        current_state = "waiting_price"
+                                    except Exception:
+                                        logging.exception("Не удалось ответить на last_tons_event")
+                                elif current_state == "waiting_price" and last_price_event:
+                                    try:
+                                        asyncio.create_task(respond_price(last_price_event[0], current_order))
+                                        current_state = None
+                                        current_order = {}
+                                    except Exception:
+                                        logging.exception("Не удалось ответить на last_price_event")
 
-                                # ждём следующий event (либо он уже пришёл и был обработан сканом)
+                                # возвращаем — обрабатываем только первый подходящий заказ в этом сообщении
                                 return
                     if not clicked:
                         logging.warning("⚠️ Кнопка 'Возьму' не найдена в структуре кнопок")
                 else:
                     logging.warning("⚠️ В сообщении со списком заказов нет кнопок")
     except Exception:
-        logging.exception("Unexpected error in handler")
+        logging.exception("Unexpected error in generic_handler")
+
+
+@client.on(events.NewMessage(from_users=BOT, pattern=RE_IS_TONS_QUESTION))
+async def tons_question_handler(event):
+    """Отдельный handler для вопросов про тонны — моментальная реакция, если мы в нужном состоянии."""
+    global current_state, current_order
+    log_debug_event(event, note="tons handler")
+
+    if current_state == "waiting_tons" and current_order:
+        try:
+            await respond_tons(event, current_order)
+            current_state = "waiting_price"
+        except Exception:
+            logging.exception("Ошибка в tons_question_handler")
+
+
+@client.on(events.NewMessage(from_users=BOT, pattern=RE_IS_PRICE_QUESTION))
+async def price_question_handler(event):
+    """Отдельный handler для вопросов про цену."""
+    global current_state, current_order
+    log_debug_event(event, note="price handler")
+
+    if current_state == "waiting_price" and current_order:
+        try:
+            await respond_price(event, current_order)
+            current_state = None
+            current_order = {}
+        except Exception:
+            logging.exception("Ошибка в price_question_handler")
 
 
 async def main():
-    await client.start()
-    logging.info("🤖 Auto orders bot started (debug mode=%s)", logging_level == logging.DEBUG)
-    await client.run_until_disconnected()
+    try:
+        await client.start()
+        logging.info("🤖 Auto orders bot started (debug=%s)", logging_level == logging.DEBUG)
+        await client.run_until_disconnected()
+    finally:
+        # остановим listener логов корректно при завершении
+        try:
+            listener.stop()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # чтобы graceful shutdown на Ctrl+C в Windows/Linux
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Interrupted by user, exiting...")
+    except Exception:
+        logging.exception("Fatal error in main")
