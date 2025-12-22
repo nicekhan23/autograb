@@ -26,8 +26,8 @@ PHONE_NUMBER = os.getenv('PHONE_NUMBER')
 SESSION_NAME = os.getenv('SESSION_NAME', 'auto_truck_orders')
 
 # Параметры фильтра заказов
-MIN_TONS = int(os.getenv('MIN_TONS', 50))
-MIN_PRICE_PER_TON = int(os.getenv('MIN_PRICE', 4500))
+MIN_TONS = int(os.getenv('MIN_TONS'))
+MIN_PRICE_PER_TON = int(os.getenv('MIN_PRICE'))
 
 # Хранение данных о текущем заказе
 current_order_data = {}
