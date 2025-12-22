@@ -23,7 +23,7 @@ load_dotenv()
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 PHONE_NUMBER = os.getenv('PHONE_NUMBER')
-SESSION_NAME = os.getenv('SESSION_NAME', 'centralasia_trucks')
+SESSION_NAME = os.getenv('SESSION_NAME', 'auto_truck_orders')
 
 # Параметры фильтра заказов
 MIN_TONS = int(os.getenv('MIN_TONS', 50))
