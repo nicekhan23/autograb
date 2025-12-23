@@ -50,7 +50,7 @@ async def main():
                 sender = await event.get_sender()
                 
                 # Логируем полученное сообщение
-                logger.info(f"Получено сообщение от {sender.username if sender.username else sender.id}: {message_text[:100]}...")
+                logger.info(f"Получено сообщение от {sender.username if sender.username else sender.id}: {message_text[:-1]}")
                 
                 # Обработка триггерных сообщений
                 if ("Размещен новый заказ" in message_text or 
