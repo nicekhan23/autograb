@@ -54,7 +54,7 @@ async def main():
                 
                 # Обработка триггерных сообщений
                 if ("Размещен новый заказ" in message_text or 
-                    "Заказ отменен" in message_text):
+                    "отменено" in message_text):
                     await click_current_orders(client, event)
                 
                 # Обработка списка заказов
@@ -128,22 +128,11 @@ async def process_order_list(client, event, message):
                             logger.info(f"Нажата inline-кнопка 'Возьму' для заказа №{order_data.get('number')}")
                             button_found = True
                             break
-                        elif "Возьму" in button_text:  # Обычная текстовая кнопка
-                            # Для обычных кнопок отправляем текстовое сообщение
-                            await client.send_message(event.chat_id, "Возьму")
-                            logger.info(f"Отправлен текст 'Возьму' для заказа №{order_data.get('number')}")
-                            button_found = True
-                            break
                     if button_found:
                         break
             
             if not button_found:
-                # Если кнопок нет в сообщении, но есть текст "Возьму" в сообщении
-                if "Возьму" in message_text:
-                    await client.send_message(event.chat_id, "Возьму")
-                    logger.info(f"Отправлен текст 'Возьму' для заказа №{order_data.get('number')} (без кнопок)")
-                else:
-                    logger.warning(f"Заказ №{order_data.get('number')} подходит, но не найдена кнопка 'Возьму'")
+                logger.warning(f"Заказ №{order_data.get('number')} подходит, но не найдена кнопка 'Возьму'")
                 
         else:
             logger.info(f"Заказ №{order_data.get('number')} не подходит по условиям (нужно: ≥{MIN_TONS}т, ≥{MIN_PRICE_PER_TON}тг/т)")
