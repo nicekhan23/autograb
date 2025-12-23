@@ -115,18 +115,35 @@ async def process_order_list(client, event, message):
             # Сохраняем данные заказа для последующих ответов
             current_order_data[event.chat_id] = order_data
             
-            # Ищем inline-кнопку "Возьму"
-            if message.buttons:
+            # Ищем кнопку "Возьму" любого типа
+            button_found = False
+            
+            # Проверяем inline-кнопки (KeyboardButtonCallback)
+            if hasattr(message, 'buttons') and message.buttons:
                 for row in message.buttons:
                     for button in row:
-                        if isinstance(button, KeyboardButtonCallback) and "Возьму" in button.text:
+                        button_text = getattr(button, 'text', '')
+                        if isinstance(button, KeyboardButtonCallback) and "Возьму" in button_text:
                             await message.click(data=button.data)
                             logger.info(f"Нажата inline-кнопка 'Возьму' для заказа №{order_data.get('number')}")
-                            return
-                logger.warning(f"В сообщении есть кнопки, но не найдена inline-кнопка 'Возьму'")
-            else:
-                # Если нет inline-кнопки, но есть подходящий заказ - логируем
-                logger.info(f"Заказ №{order_data.get('number')} подходит, но нет inline-кнопки 'Возьму' для нажатия")
+                            button_found = True
+                            break
+                        elif "Возьму" in button_text:  # Обычная текстовая кнопка
+                            # Для обычных кнопок отправляем текстовое сообщение
+                            await client.send_message(event.chat_id, "Возьму")
+                            logger.info(f"Отправлен текст 'Возьму' для заказа №{order_data.get('number')}")
+                            button_found = True
+                            break
+                    if button_found:
+                        break
+            
+            if not button_found:
+                # Если кнопок нет в сообщении, но есть текст "Возьму" в сообщении
+                if "Возьму" in message_text:
+                    await client.send_message(event.chat_id, "Возьму")
+                    logger.info(f"Отправлен текст 'Возьму' для заказа №{order_data.get('number')} (без кнопок)")
+                else:
+                    logger.warning(f"Заказ №{order_data.get('number')} подходит, но не найдена кнопка 'Возьму'")
                 
         else:
             logger.info(f"Заказ №{order_data.get('number')} не подходит по условиям (нужно: ≥{MIN_TONS}т, ≥{MIN_PRICE_PER_TON}тг/т)")
