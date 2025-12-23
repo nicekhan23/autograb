@@ -110,8 +110,7 @@ async def process_order_list(client, event, message):
         logger.info(f"Найден заказ №{order_data.get('number')}: {tons} т, {price_per_ton} тг/т, Нет предложений: {has_no_offers}")
         
         if (tons >= MIN_TONS and 
-            price_per_ton >= MIN_PRICE_PER_TON and 
-            has_no_offers):
+            price_per_ton >= MIN_PRICE_PER_TON):
             
             # Сохраняем данные заказа для последующих ответов
             current_order_data[event.chat_id] = order_data
