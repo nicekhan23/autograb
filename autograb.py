@@ -106,36 +106,49 @@ async def process_order_list(client, event, message):
         tons = float(order_data.get('tons', 0))
         price_per_ton = float(order_data.get('price_per_ton', 0))
         has_no_offers = "Нет предложений" in message_text
+        has_offers = "Есть предложение" in message_text or "Есть предлолжение" in message_text
         
-        logger.info(f"Найден заказ №{order_data.get('number')}: {tons} т, {price_per_ton} тг/т, Нет предложений: {has_no_offers}")
+        logger.info(f"Найден заказ №{order_data.get('number')}: {tons} т, {price_per_ton} тг/т, Предложений: {has_offers}")
         
-        if (tons >= MIN_TONS and 
-            price_per_ton >= MIN_PRICE_PER_TON):
+        # Дополнительная проверка: если есть предложения, не пытаемся взять
+        if has_offers:
+            logger.info(f"Заказ №{order_data.get('number')} уже имеет предложения, пропускаем")
+            return
             
-            # Сохраняем данные заказа для последующих ответов
+        if (tons >= MIN_TONS and price_per_ton >= MIN_PRICE_PER_TON):
+            
+            # Сохраняем данные заказа
             current_order_data[event.chat_id] = order_data
             
-            # Ищем кнопку "Возьму" любого типа
+            # Пытаемся найти кнопку
             button_found = False
             
-            # Проверяем inline-кнопки (KeyboardButtonCallback)
+            # Проверяем inline-кнопки
             if hasattr(message, 'buttons') and message.buttons:
-                for row in message.buttons:
+                logger.info(f"Найдены кнопки в сообщении: {len(message.buttons)} строк")
+                for row_num, row in enumerate(message.buttons):
+                    logger.info(f"Строка {row_num}: {row}")
                     for button in row:
                         button_text = getattr(button, 'text', '')
-                        if isinstance(button, KeyboardButtonCallback) and "Возьму" in button_text:
+                        logger.info(f"Кнопка: '{button_text}', тип: {type(button)}")
+                        if "Возьму" in button_text:
                             await message.click(data=button.data)
-                            logger.info(f"Нажата inline-кнопка 'Возьму' для заказа №{order_data.get('number')}")
+                            logger.info(f"Нажата кнопка 'Возьму' для заказа №{order_data.get('number')}")
                             button_found = True
                             break
                     if button_found:
                         break
             
             if not button_found:
-                logger.warning(f"Заказ №{order_data.get('number')} подходит, но не найдена кнопка 'Возьму'")
+                # Попробуем отправить текстовую команду
+                try:
+                    await client.send_message(event.chat_id, f"Возьму {order_data.get('number')}")
+                    logger.info(f"Отправлена текстовая команда 'Возьму' для заказа №{order_data.get('number')}")
+                except Exception as e:
+                    logger.warning(f"Не удалось отправить текстовую команду: {e}")
                 
         else:
-            logger.info(f"Заказ №{order_data.get('number')} не подходит по условиям (нужно: ≥{MIN_TONS}т, ≥{MIN_PRICE_PER_TON}тг/т)")
+            logger.info(f"Заказ №{order_data.get('number')} не подходит по условиям")
             
     except Exception as e:
         logger.error(f"Ошибка при обработке списка заказов: {e}", exc_info=True)
