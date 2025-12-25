@@ -26,8 +26,8 @@ PHONE_NUMBER = os.getenv('PHONE_NUMBER')
 SESSION_NAME = os.getenv('SESSION_NAME', 'auto_truck_orders')
 
 # Параметры фильтра заказов
-MIN_TONS = int(os.getenv('MIN_TONS', 10))
-MIN_PRICE_PER_TON = int(os.getenv('MIN_PRICE', 200))
+MIN_TONS = int(os.getenv('MIN_TONS', 50))
+MIN_PRICE_PER_TON = int(os.getenv('MIN_PRICE', 3000))
 
 # Хранение данных о текущем заказе
 current_order_data = {}
@@ -56,7 +56,7 @@ async def main():
                     return
                 
                 # Логируем полученное сообщение
-                logger.info(f"Получено сообщение от {sender.username if sender.username else sender.id}: {message_text[:100]}...")
+                logger.info(f"Получено сообщение от {sender.username if sender.username else sender.id}: {message_text[:-1]}...")
                 
                 # Обработка триггерных сообщений
                 if ("Размещен новый заказ" in message_text or 
