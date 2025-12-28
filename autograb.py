@@ -190,8 +190,6 @@ async def answer_tons_question(client, event):
                 logger.info(f"Отправлен текстовый ответ о тоннаже: {response}")
             else:
                 logger.warning(f"Не найдены данные о тоннаже для чата {chat_id}")
-                # Отправляем минимальный тоннаж по умолчанию
-                await client.send_message(chat_id, str(MIN_TONS))
         else:
             logger.warning(f"Нет данных о текущем заказе для чата {chat_id}")
             # Отправляем минимальный тоннаж по умолчанию
