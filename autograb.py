@@ -130,6 +130,7 @@ async def process_order_list(client, event, message):
             
             # Сохраняем данные заказа
             current_order_data[event.chat_id] = order_data
+            current_order_data[event.chat_id]['processed_at'] = datetime.now()
             
             # Ищем кнопки в сообщении
             button_found = await find_and_click_button(client, message, order_data)
@@ -180,51 +181,124 @@ async def answer_tons_question(client, event):
     """Ответ на вопрос о количестве тонн"""
     try:
         chat_id = event.chat_id
+        message_text = event.message.message or ""
         
+        # Попробуем найти номер заказа в сообщении
+        order_number = None
+        order_match = re.search(r'заказ[а]?\s*[№#]?\s*(\d+)', message_text, re.IGNORECASE)
+        if order_match:
+            order_number = order_match.group(1)
+        
+        # Если есть номер заказа в сообщении, ищем соответствующие данные
+        if order_number:
+            for chat, order_data in list(current_order_data.items()):
+                if order_data.get('number') == order_number:
+                    tons = order_data.get('tons')
+                    if tons:
+                        response = str(int(tons) if tons.is_integer() else tons)
+                        await client.send_message(chat_id, response)
+                        logger.info(f"Отправлен текстовый ответ о тоннаже для заказа №{order_number}: {response}")
+                        return
+            
+        # Старая логика для обратной совместимости
         if chat_id in current_order_data:
             tons = current_order_data[chat_id].get('tons')
             if tons:
-                # Отправляем текстовый ответ
                 response = str(int(tons) if tons.is_integer() else tons)
                 await client.send_message(chat_id, response)
-                logger.info(f"Отправлен текстовый ответ о тоннаже: {response}")
+                logger.info(f"Отправлен текстовый ответ о тоннаже (старая логика): {response}")
+                return
             else:
                 logger.warning(f"Не найдены данные о тоннаже для чата {chat_id}")
         else:
-            logger.warning(f"Нет данных о текущем заказе для чата {chat_id}")
-            # Отправляем минимальный тоннаж по умолчанию
-            await client.send_message(chat_id, str(MIN_TONS))
+            logger.info(f"Нет данных о текущем заказе для чата {chat_id}. Поиск по всему хранилищу...")
+            # Последняя попытка: берем любой доступный заказ
+            for chat, order_data in list(current_order_data.items()):
+                tons = order_data.get('tons')
+                if tons:
+                    response = str(int(tons) if tons.is_integer() else tons)
+                    await client.send_message(chat_id, response)
+                    logger.info(f"Отправлен текстовый ответ о тоннаже из общего хранилища: {response}")
+                    return
+        
+        # Если ничего не нашли, отправляем минимальный тоннаж по умолчанию
+        await client.send_message(chat_id, str(MIN_TONS))
+        logger.info(f"Отправлен минимальный тоннаж по умолчанию: {MIN_TONS}")
             
     except Exception as e:
         logger.error(f"Ошибка при ответе на вопрос о тоннаже: {e}")
+        try:
+            await client.send_message(event.chat_id, str(MIN_TONS))
+        except:
+            pass
 
 async def answer_price_question(client, event):
     """Ответ на вопрос о цене"""
     try:
         chat_id = event.chat_id
+        message_text = event.message.message or ""
         
+        # Попробуем найти номер заказа в сообщении
+        order_number = None
+        order_match = re.search(r'заказ[а]?\s*[№#]?\s*(\d+)', message_text, re.IGNORECASE)
+        if order_match:
+            order_number = order_match.group(1)
+        
+        # Если есть номер заказа в сообщении, ищем соответствующие данные
+        if order_number:
+            for chat, order_data in list(current_order_data.items()):
+                if order_data.get('number') == order_number:
+                    price = order_data.get('price_per_ton')
+                    if price:
+                        response = str(int(price) if price.is_integer() else price)
+                        await client.send_message(chat_id, response)
+                        logger.info(f"Отправлен текстовый ответ о цене для заказа №{order_number}: {response}")
+                        
+                        # НЕ удаляем данные сразу - они могут понадобиться для других вопросов
+                        # Очищаем только если это текущий чат
+                        if chat == chat_id:
+                            del current_order_data[chat_id]
+                        return
+            
+        # Старая логика для обратной совместимости
         if chat_id in current_order_data:
             price = current_order_data[chat_id].get('price_per_ton')
             if price:
-                # Отправляем текстовый ответ - максимальную цену из заказа
                 response = str(int(price) if price.is_integer() else price)
                 await client.send_message(chat_id, response)
-                logger.info(f"Отправлен текстовый ответ о цене: {response}")
+                logger.info(f"Отправлен текстовый ответ о цене (старая логика): {response}")
                 
-                # Очищаем данные заказа после ответа
+                # Очищаем данные заказа после ответа только для этого чата
                 if chat_id in current_order_data:
                     del current_order_data[chat_id]
+                return
             else:
                 logger.warning(f"Не найдены данные о цене для чата {chat_id}")
-                # Отправляем минимальную цену по умолчанию
-                await client.send_message(chat_id, str(MIN_PRICE_PER_TON))
         else:
-            logger.warning(f"Нет данных о текущем заказе для чата {chat_id}")
-            # Отправляем минимальную цену по умолчанию
-            await client.send_message(chat_id, str(MIN_PRICE_PER_TON))
+            logger.info(f"Нет данных о текущем заказе для чата {chat_id}. Поиск по всему хранилищу...")
+            # Последняя попытка: берем любой доступный заказ
+            for chat, order_data in list(current_order_data.items()):
+                price = order_data.get('price_per_ton')
+                if price:
+                    response = str(int(price) if price.is_integer() else price)
+                    await client.send_message(chat_id, response)
+                    logger.info(f"Отправлен текстовый ответ о цене из общего хранилища: {response}")
+                    
+                    # Очищаем только если это текущий чат
+                    if chat == chat_id:
+                        del current_order_data[chat_id]
+                    return
+        
+        # Если ничего не нашли, отправляем минимальную цену по умолчанию
+        await client.send_message(chat_id, str(MIN_PRICE_PER_TON))
+        logger.info(f"Отправлена минимальная цена по умолчанию: {MIN_PRICE_PER_TON}")
             
     except Exception as e:
         logger.error(f"Ошибка при ответе на вопрос о цене: {e}")
+        try:
+            await client.send_message(event.chat_id, str(MIN_PRICE_PER_TON))
+        except:
+            pass
 
 def parse_order_data(message_text):
     """Парсинг данных заказа из текста сообщения"""
@@ -255,6 +329,26 @@ def parse_order_data(message_text):
     except Exception as e:
         logger.error(f"Ошибка при парсинге данных заказа: {e}")
         return None
+
+def cleanup_old_orders():
+    """Очистка устаревших данных о заказах (старше 5 минут)"""
+    try:
+        current_time = datetime.now()
+        to_delete = []
+        
+        for chat_id, order_data in current_order_data.items():
+            # Если заказ обработан более 5 минут назад, удаляем
+            if 'processed_at' in order_data:
+                processed_time = order_data['processed_at']
+                if (current_time - processed_time).seconds > 300:  # 5 минут
+                    to_delete.append(chat_id)
+        
+        for chat_id in to_delete:
+            del current_order_data[chat_id]
+            logger.info(f"Очищены устаревшие данные для чата {chat_id}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при очистке устаревших заказов: {e}")
 
 if __name__ == "__main__":
     # Создаем папку для логов если ее нет
