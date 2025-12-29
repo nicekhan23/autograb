@@ -120,17 +120,17 @@ async def process_order_list(client, event, message):
         
         logger.info(f"Найден заказ №{order_data.get('number')}: {tons} т, {price_per_ton} тг/т, Нет предложений: {has_no_offers}")
         
-        # Если уже есть предложения - пропускаем
+        # ВСЕГДА сохраняем данные заказа для будущих ответов
+        current_order_data[event.chat_id] = order_data
+        current_order_data[event.chat_id]['processed_at'] = datetime.now()
+        
+        # Если уже есть предложения - пропускаем нажатие кнопки
         if has_offers:
-            logger.info(f"Заказ №{order_data.get('number')} уже имеет предложения, пропускаем")
+            logger.info(f"Заказ №{order_data.get('number')} уже имеет предложения, пропускаем нажатие кнопки")
             return
             
-        # Проверяем условия по тоннажу и цене
+        # Проверяем условия по тоннажу и цене для нажатия кнопки
         if (tons >= MIN_TONS and price_per_ton >= MIN_PRICE_PER_TON and has_no_offers):
-            
-            # Сохраняем данные заказа
-            current_order_data[event.chat_id] = order_data
-            current_order_data[event.chat_id]['processed_at'] = datetime.now()
             
             # Ищем кнопки в сообщении
             button_found = await find_and_click_button(client, message, order_data)
